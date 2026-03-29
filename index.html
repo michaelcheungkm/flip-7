@@ -1,0 +1,1753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLIP 7 — Multiplayer Card Game</title>
+
+<!-- Firebase -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, get, onValue, update, push, remove, serverTimestamp, runTransaction }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  // ══════════════════════════════════════════════
+  // 🔧 REPLACE WITH YOUR FIREBASE CONFIG
+  // ══════════════════════════════════════════════
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+    projectId: "YOUR_PROJECT",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
+  };
+  // ══════════════════════════════════════════════
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  window._db = db;
+  window._dbFns = { ref, set, get, onValue, update, push, remove, serverTimestamp, runTransaction };
+  window.dispatchEvent(new Event('firebase-ready'));
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=Playfair+Display:ital,wght@1,700&display=swap" rel="stylesheet">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a40;
+    --accent: #f5c842;
+    --accent2: #e8395a;
+    --accent3: #4fc8a0;
+    --text: #e8e8f0;
+    --text-dim: #6b6b8a;
+    --card-red: #e8395a;
+    --card-black: #e8e8f0;
+    --flip-blue: #4a9eff;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    overflow-x: hidden;
+  }
+
+  /* Noise texture overlay */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.6;
+  }
+
+  /* ── SCREENS ── */
+  .screen {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 10;
+    transition: opacity 0.4s, transform 0.4s;
+  }
+  .screen.hidden { opacity: 0; pointer-events: none; transform: scale(0.96); }
+
+  /* ── LOBBY SCREEN ── */
+  #lobby {
+    background: var(--bg);
+    gap: 0;
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', cursive;
+    font-size: clamp(5rem, 15vw, 10rem);
+    letter-spacing: 0.06em;
+    line-height: 0.9;
+    text-align: center;
+    color: var(--accent);
+    text-shadow: 0 0 80px rgba(245, 200, 66, 0.3), 4px 4px 0 var(--accent2);
+    margin-bottom: 0.1em;
+  }
+
+  .logo span {
+    color: var(--accent2);
+    text-shadow: 0 0 80px rgba(232, 57, 90, 0.4), 4px 4px 0 var(--accent);
+  }
+
+  .tagline {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    color: var(--text-dim);
+    font-size: 1rem;
+    letter-spacing: 0.1em;
+    margin-bottom: 3rem;
+  }
+
+  .lobby-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    width: 100%;
+    max-width: 360px;
+    padding: 0 1.5rem;
+  }
+
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .field-label {
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  input[type="text"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 1rem;
+    padding: 0.75rem 1rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    width: 100%;
+  }
+  input[type="text"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(245, 200, 66, 0.1);
+  }
+  input[type="text"]::placeholder { color: var(--text-dim); }
+
+  .btn {
+    font-family: 'Bebas Neue', cursive;
+    letter-spacing: 0.15em;
+    font-size: 1.1rem;
+    padding: 0.85rem 1.5rem;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.12s, box-shadow 0.12s;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #0a0a0f;
+    box-shadow: 4px 4px 0 var(--accent2);
+  }
+  .btn-primary:hover { box-shadow: 6px 6px 0 var(--accent2); transform: translate(-1px, -1px); }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--accent3);
+    border: 1px solid var(--accent3);
+    box-shadow: 4px 4px 0 rgba(79, 200, 160, 0.3);
+  }
+  .btn-secondary:hover { box-shadow: 6px 6px 0 rgba(79, 200, 160, 0.4); transform: translate(-1px, -1px); }
+
+  .btn-danger {
+    background: var(--accent2);
+    color: #fff;
+    box-shadow: 4px 4px 0 #8a1a30;
+  }
+
+  .divider {
+    display: flex; align-items: center; gap: 1rem;
+    color: var(--text-dim); font-size: 0.75rem; letter-spacing: 0.15em;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ── WAITING ROOM ── */
+  #waiting {
+    background: var(--bg);
+    gap: 1.5rem;
+    padding: 2rem;
+  }
+
+  .room-header {
+    text-align: center;
+  }
+
+  .room-code {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 3.5rem;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    text-shadow: 3px 3px 0 var(--accent2);
+  }
+
+  .room-label {
+    font-size: 0.65rem;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .player-list {
+    width: 100%;
+    max-width: 440px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .player-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    animation: slideIn 0.3s ease;
+  }
+  .player-item:last-child { border-bottom: none; }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .player-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent3);
+    box-shadow: 0 0 8px var(--accent3);
+    flex-shrink: 0;
+  }
+
+  .player-name-tag { flex: 1; font-size: 0.9rem; }
+  .host-badge {
+    font-size: 0.6rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(245, 200, 66, 0.1);
+    border: 1px solid rgba(245, 200, 66, 0.3);
+    padding: 0.2em 0.5em;
+  }
+  .you-badge {
+    font-size: 0.6rem; letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--accent3); background: rgba(79,200,160,0.1);
+    border: 1px solid rgba(79,200,160,0.3); padding: 0.2em 0.5em;
+  }
+
+  .waiting-actions { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; max-width: 440px; }
+
+  /* ── GAME SCREEN ── */
+  #game {
+    background: var(--bg);
+    padding: 0;
+    justify-content: flex-start;
+    overflow-y: auto;
+  }
+
+  .game-layout {
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Top bar */
+  .game-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.75rem;
+  }
+
+  .game-logo {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.8rem;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+  }
+
+  .round-info {
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    text-align: right;
+  }
+
+  .round-num { color: var(--accent); font-size: 1.1rem; display: block; }
+
+  /* Deck area */
+  .deck-area {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 2rem;
+    padding: 1.5rem 0;
+  }
+
+  .deck-stack {
+    position: relative;
+    width: 90px;
+    height: 126px;
+    cursor: pointer;
+  }
+
+  .deck-stack-card {
+    position: absolute;
+    width: 90px;
+    height: 126px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: transform 0.2s;
+  }
+  .deck-stack-card:nth-child(1) { transform: rotate(-3deg) translate(-2px, -2px); }
+  .deck-stack-card:nth-child(2) { transform: rotate(-1deg); }
+  .deck-stack-card:nth-child(3) { transform: rotate(1deg); background: var(--surface); }
+
+  .deck-top {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #1e1e30, #12121a);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1rem;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    box-shadow: 0 0 20px rgba(245,200,66,0.15), inset 0 0 20px rgba(0,0,0,0.3);
+    transition: box-shadow 0.2s, transform 0.2s;
+    z-index: 5;
+  }
+
+  .deck-stack.active .deck-top {
+    box-shadow: 0 0 30px rgba(245,200,66,0.5), inset 0 0 20px rgba(0,0,0,0.3);
+    cursor: pointer;
+  }
+  .deck-stack.active .deck-top:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 30px rgba(245,200,66,0.5);
+  }
+
+  .deck-count {
+    font-size: 0.6rem;
+    display: block;
+    margin-top: 2px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  .flip-zone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .flip-zone-label {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--text-dim);
+  }
+
+  .last-flipped {
+    width: 90px;
+    height: 126px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Bebas Neue', cursive;
+    font-size: 2.5rem;
+    transition: all 0.3s;
+  }
+
+  /* Players area */
+  .players-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+
+  .player-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    transition: border-color 0.3s, box-shadow 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .player-panel::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--text-dim);
+    transition: background 0.3s;
+  }
+
+  .player-panel.active-turn { border-color: var(--accent); box-shadow: 0 0 20px rgba(245,200,66,0.2); }
+  .player-panel.active-turn::before { background: var(--accent); }
+  .player-panel.you-panel { border-color: rgba(79,200,160,0.4); }
+  .player-panel.you-panel::before { background: var(--accent3); }
+  .player-panel.busted { opacity: 0.5; }
+  .player-panel.busted::before { background: var(--accent2); }
+  .player-panel.stopped::before { background: var(--flip-blue); }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+
+  .panel-name {
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+
+  .panel-score {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.4rem;
+    color: var(--accent);
+    line-height: 1;
+  }
+
+  .panel-status {
+    font-size: 0.6rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+  .status-flipping { color: var(--accent); }
+  .status-stopped { color: var(--flip-blue); }
+  .status-busted { color: var(--accent2); }
+  .status-waiting { color: var(--text-dim); }
+
+  .mini-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .mini-card {
+    width: 32px;
+    height: 44px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.1rem;
+    animation: cardPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+  }
+
+  @keyframes cardPop {
+    from { transform: scale(0) rotate(-10deg); opacity: 0; }
+    to { transform: scale(1) rotate(0deg); opacity: 1; }
+  }
+
+  .mini-card.red { color: var(--card-red); border-color: rgba(232,57,90,0.4); }
+  .mini-card.black { color: var(--card-black); }
+  .mini-card.freeze { color: var(--flip-blue); border-color: rgba(74,158,255,0.4); }
+  .mini-card.bonus { color: var(--accent); border-color: rgba(245,200,66,0.4); }
+
+  .dup-indicator {
+    position: absolute;
+    top: -4px; right: -4px;
+    width: 14px; height: 14px;
+    background: var(--accent2);
+    border-radius: 50%;
+    font-size: 0.5rem;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font-family: 'DM Mono', monospace;
+    font-weight: 500;
+  }
+
+  /* Your turn action bar */
+  .action-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: linear-gradient(to top, var(--bg) 60%, transparent);
+    padding: 1.5rem 1rem 1.5rem;
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    z-index: 20;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  .action-bar.hidden { opacity: 0; pointer-events: none; transform: translateY(20px); }
+
+  .btn-flip {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.4rem;
+    letter-spacing: 0.2em;
+    padding: 1rem 2.5rem;
+    background: var(--accent);
+    color: #0a0a0f;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 30px rgba(245,200,66,0.4), 4px 4px 0 var(--accent2);
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .btn-flip:hover { transform: translate(-2px,-2px); box-shadow: 0 0 40px rgba(245,200,66,0.5), 6px 6px 0 var(--accent2); }
+  .btn-flip:active { transform: scale(0.96); }
+
+  .btn-stop {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.4rem;
+    letter-spacing: 0.2em;
+    padding: 1rem 2.5rem;
+    background: transparent;
+    color: var(--flip-blue);
+    border: 1px solid var(--flip-blue);
+    cursor: pointer;
+    box-shadow: 4px 4px 0 rgba(74,158,255,0.3);
+    transition: transform 0.12s, box-shadow 0.12s;
+  }
+  .btn-stop:hover { transform: translate(-2px,-2px); box-shadow: 6px 6px 0 rgba(74,158,255,0.4); }
+  .btn-stop:active { transform: scale(0.96); }
+
+  .turn-indicator {
+    text-align: center;
+    font-size: 0.65rem;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 0.5rem;
+    background: rgba(245,200,66,0.05);
+    border: 1px solid rgba(245,200,66,0.2);
+  }
+
+  /* Log */
+  .game-log {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 0.75rem 1rem;
+    max-height: 140px;
+    overflow-y: auto;
+    font-size: 0.75rem;
+    line-height: 1.8;
+  }
+  .game-log::-webkit-scrollbar { width: 4px; }
+  .game-log::-webkit-scrollbar-track { background: var(--surface); }
+  .game-log::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .log-entry { color: var(--text-dim); }
+  .log-entry .highlight { color: var(--text); }
+  .log-entry .card-val { color: var(--accent); font-weight: 500; }
+  .log-entry .busted-val { color: var(--accent2); }
+  .log-entry .stop-val { color: var(--flip-blue); }
+
+  /* Round end overlay */
+  #round-end {
+    background: rgba(10,10,15,0.92);
+    backdrop-filter: blur(12px);
+  }
+
+  .round-end-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2.5rem;
+    max-width: 480px;
+    width: 100%;
+    margin: 0 1rem;
+    text-align: center;
+  }
+
+  .round-end-title {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 3rem;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    margin-bottom: 0.25rem;
+  }
+
+  .round-results {
+    margin: 1.5rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    text-align: left;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .result-row {
+    display: flex;
+    align-items: center;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    gap: 1rem;
+    font-size: 0.85rem;
+  }
+  .result-row:last-child { border-bottom: none; }
+  .result-rank {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.4rem;
+    color: var(--text-dim);
+    width: 24px;
+  }
+  .result-rank.winner { color: var(--accent); }
+  .result-pname { flex: 1; }
+  .result-pts {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.2rem;
+    color: var(--accent3);
+  }
+  .result-delta {
+    font-size: 0.7rem;
+    color: var(--accent);
+  }
+  .result-busted { color: var(--accent2); font-size: 0.7rem; }
+
+  /* Game over */
+  .game-over-winner {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 2rem;
+    color: var(--accent3);
+    margin: 0.5rem 0;
+  }
+
+  /* Toast */
+  .toast-container {
+    position: fixed;
+    top: 1rem; left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+  }
+
+  .toast {
+    font-size: 0.8rem;
+    letter-spacing: 0.1em;
+    padding: 0.6rem 1.25rem;
+    border-left: 3px solid var(--accent);
+    background: var(--surface2);
+    color: var(--text);
+    animation: toastIn 0.3s ease, toastOut 0.4s ease 2s forwards;
+    white-space: nowrap;
+  }
+
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes toastOut { to { opacity: 0; transform: translateY(-10px); } }
+
+  /* Card flip animation */
+  @keyframes flipReveal {
+    0% { transform: rotateY(0) scale(1); }
+    40% { transform: rotateY(90deg) scale(1.1); }
+    60% { transform: rotateY(-90deg) scale(1.1); }
+    100% { transform: rotateY(0) scale(1); }
+  }
+  .flipping { animation: flipReveal 0.5s ease; }
+
+  /* Turn pulse */
+  @keyframes turnPulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(245,200,66,0.2); }
+    50% { box-shadow: 0 0 40px rgba(245,200,66,0.5); }
+  }
+  .active-turn { animation: turnPulse 1.5s ease-in-out infinite; }
+
+  /* Scoreboard top strip */
+  .score-strip {
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    padding: 0.5rem 0;
+    scrollbar-width: none;
+  }
+  .score-strip::-webkit-scrollbar { display: none; }
+  .score-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    white-space: nowrap;
+    min-width: 90px;
+    flex-shrink: 0;
+  }
+  .score-chip .sname { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+  .score-chip .sval {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.6rem;
+    color: var(--text);
+    line-height: 1;
+  }
+  .score-chip.leading .sval { color: var(--accent); }
+  .score-chip.you-chip { border-color: rgba(79,200,160,0.4); }
+
+  /* Rules tooltip */
+  .rules-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    padding: 0.35rem 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .rules-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Rules modal */
+  #rules-modal {
+    background: rgba(10,10,15,0.9);
+    backdrop-filter: blur(8px);
+    z-index: 50;
+  }
+  .rules-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2rem;
+    max-width: 500px;
+    width: 100%;
+    margin: 0 1rem;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .rules-box h2 {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 2rem;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    margin-bottom: 1.25rem;
+  }
+  .rules-box h3 {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.1rem;
+    letter-spacing: 0.1em;
+    color: var(--accent3);
+    margin: 1rem 0 0.5rem;
+  }
+  .rules-box p, .rules-box li {
+    font-size: 0.8rem;
+    line-height: 1.7;
+    color: var(--text-dim);
+    margin-bottom: 0.4rem;
+  }
+  .rules-box ul { padding-left: 1.25rem; }
+  .rules-box .close-rules {
+    margin-top: 1.5rem;
+    width: 100%;
+  }
+
+  /* Freeze UI */
+  .frozen-notice {
+    text-align: center;
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--flip-blue);
+    padding: 0.5rem;
+    border: 1px solid rgba(74,158,255,0.3);
+    background: rgba(74,158,255,0.05);
+  }
+
+  /* Loading */
+  .loading-spinner {
+    width: 36px; height: 36px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 1rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Error */
+  .error-msg {
+    color: var(--accent2);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    padding: 0.5rem 0;
+    text-align: center;
+  }
+
+  @media (max-width: 600px) {
+    .players-grid { grid-template-columns: 1fr 1fr; }
+    .deck-area { gap: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toast-container" id="toasts"></div>
+
+<!-- ══ LOBBY SCREEN ══ -->
+<div class="screen" id="lobby">
+  <div class="logo">FLIP<span>7</span></div>
+  <div class="tagline">push your luck — one card too many</div>
+  <div class="lobby-form">
+    <div class="field-group">
+      <label class="field-label">Your Name</label>
+      <input type="text" id="player-name-input" placeholder="Enter name..." maxlength="16">
+    </div>
+    <button class="btn btn-primary" id="create-room-btn">CREATE ROOM</button>
+    <div class="divider">OR JOIN</div>
+    <div class="field-group">
+      <label class="field-label">Room Code</label>
+      <input type="text" id="room-code-input" placeholder="4-letter code..." maxlength="4" style="text-transform:uppercase;">
+    </div>
+    <button class="btn btn-secondary" id="join-room-btn">JOIN ROOM</button>
+    <div class="error-msg" id="lobby-error"></div>
+  </div>
+</div>
+
+<!-- ══ WAITING ROOM ══ -->
+<div class="screen hidden" id="waiting">
+  <div class="room-header">
+    <div class="room-label">ROOM CODE</div>
+    <div class="room-code" id="display-room-code">----</div>
+    <div class="room-label" id="waiting-status">Waiting for players...</div>
+  </div>
+  <div class="player-list" id="waiting-player-list"></div>
+  <div class="waiting-actions">
+    <div id="start-game-wrapper"></div>
+    <button class="btn btn-danger" id="leave-room-btn">LEAVE ROOM</button>
+  </div>
+</div>
+
+<!-- ══ GAME SCREEN ══ -->
+<div class="screen hidden" id="game">
+  <div class="game-layout">
+    <div class="game-topbar">
+      <div class="game-logo">FLIP7</div>
+      <div style="display:flex;gap:0.75rem;align-items:center;">
+        <button class="rules-btn" onclick="showRules()">HOW TO PLAY</button>
+        <div class="round-info">
+          ROUND <span class="round-num" id="round-display">1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Score strip -->
+    <div class="score-strip" id="score-strip"></div>
+
+    <!-- Turn indicator -->
+    <div class="turn-indicator" id="turn-indicator">Waiting...</div>
+
+    <!-- Deck + Flip zone -->
+    <div class="deck-area">
+      <div class="flip-zone">
+        <div class="flip-zone-label">LAST CARD</div>
+        <div class="last-flipped" id="last-flipped">—</div>
+      </div>
+      <div class="deck-stack" id="deck-stack">
+        <div class="deck-stack-card"></div>
+        <div class="deck-stack-card"></div>
+        <div class="deck-stack-card"></div>
+        <div class="deck-top" id="deck-top">
+          FLIP<span class="deck-count" id="deck-count-label">52 left</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Players grid -->
+    <div class="players-grid" id="players-grid"></div>
+
+    <!-- Game log -->
+    <div class="game-log" id="game-log">
+      <div class="log-entry">— Game started —</div>
+    </div>
+  </div>
+
+  <!-- Action bar (your turn) -->
+  <div class="action-bar hidden" id="action-bar">
+    <button class="btn-stop" id="btn-stop">STOP</button>
+    <button class="btn-flip" id="btn-flip">FLIP CARD</button>
+  </div>
+</div>
+
+<!-- ══ ROUND END / GAME OVER ══ -->
+<div class="screen hidden" id="round-end">
+  <div class="round-end-box">
+    <div class="round-end-title" id="round-end-title">ROUND OVER</div>
+    <div id="round-end-subtitle" style="font-size:0.75rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:0.5rem;"></div>
+    <div class="game-over-winner hidden" id="game-over-winner"></div>
+    <div class="round-results" id="round-results"></div>
+    <div id="next-round-wrapper" style="display:flex;flex-direction:column;gap:0.75rem;"></div>
+  </div>
+</div>
+
+<!-- ══ RULES MODAL ══ -->
+<div class="screen hidden" id="rules-modal">
+  <div class="rules-box">
+    <h2>HOW TO PLAY FLIP 7</h2>
+    <h3>Goal</h3>
+    <p>Collect as many unique numbered cards as possible without going over 7 different values. The player closest to 7 — or exactly 7 — wins the round.</p>
+    <h3>On Your Turn</h3>
+    <ul>
+      <li><strong>FLIP</strong> — Draw the top card from the deck.</li>
+      <li><strong>STOP</strong> — Bank your current cards and wait safely.</li>
+    </ul>
+    <h3>Card Values (1–12)</h3>
+    <ul>
+      <li>Each value counts as 1 unique card.</li>
+      <li>Duplicates: drawing a number you already have causes a <strong style="color:var(--accent2)">BUST</strong> — lose all cards.</li>
+      <li>If you hit exactly <strong style="color:var(--accent)">7 unique</strong> numbers — FLIP 7! You score a 15-point bonus.</li>
+    </ul>
+    <h3>Special Cards</h3>
+    <ul>
+      <li><strong style="color:var(--flip-blue)">FREEZE</strong> — Skip the next player's turn.</li>
+      <li><strong style="color:var(--accent)">+2 BONUS</strong> — Add 2 to your score immediately.</li>
+      <li><strong style="color:var(--accent2)">SECOND CHANCE</strong> — Ignore one duplicate (use once).</li>
+    </ul>
+    <h3>Scoring</h3>
+    <ul>
+      <li>Score = sum of your unique card values.</li>
+      <li>FLIP 7 exactly = +15 bonus points.</li>
+      <li>Bust = 0 points for the round.</li>
+      <li>First to reach <strong style="color:var(--accent)">200 points</strong> wins the game!</li>
+    </ul>
+    <button class="btn btn-secondary close-rules" onclick="hideRules()">GOT IT</button>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════
+// GAME LOGIC
+// ════════════════════════════════════
+
+const WINNING_SCORE = 200;
+const ROUNDS_LIMIT = 10;
+
+let db, dbFns;
+let myId = null;
+let myName = '';
+let roomCode = '';
+let isHost = false;
+let gameState = null;
+let unsubscribers = [];
+let isFrozenThisTurn = false;
+
+// ── Card deck generation ──
+function makeDeck() {
+  const cards = [];
+  // Numbers 1-12, 4 suits each
+  for (let v = 1; v <= 12; v++) {
+    for (let s = 0; s < 4; s++) {
+      cards.push({ type: 'number', value: v, suit: s });
+    }
+  }
+  // Special cards
+  for (let i = 0; i < 4; i++) cards.push({ type: 'freeze', value: 0 });
+  for (let i = 0; i < 4; i++) cards.push({ type: 'bonus2', value: 2 });
+  for (let i = 0; i < 3; i++) cards.push({ type: 'secondchance', value: 0 });
+  return shuffle(cards);
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function cardDisplay(card) {
+  if (!card) return { text: '—', css: '' };
+  if (card.type === 'number') {
+    const isRed = card.suit < 2;
+    return { text: String(card.value), css: isRed ? 'red' : 'black' };
+  }
+  if (card.type === 'freeze') return { text: '❄', css: 'freeze' };
+  if (card.type === 'bonus2') return { text: '+2', css: 'bonus' };
+  if (card.type === 'secondchance') return { text: 'SC', css: 'bonus' };
+  return { text: '?', css: '' };
+}
+
+function calcScore(cards) {
+  // Sum of unique number values
+  const seen = new Set();
+  let total = 0;
+  for (const c of cards) {
+    if (c.type === 'number' && !seen.has(c.value)) {
+      seen.add(c.value);
+      total += c.value;
+    }
+    if (c.type === 'bonus2') total += 2;
+  }
+  return total;
+}
+
+function uniqueCount(cards) {
+  const seen = new Set();
+  for (const c of cards) if (c.type === 'number') seen.add(c.value);
+  return seen.size;
+}
+
+// ── Room code ──
+function genCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c = '';
+  for (let i = 0; i < 4; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
+function genPlayerId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+// ── Firebase init ──
+window.addEventListener('firebase-ready', () => {
+  db = window._db;
+  dbFns = window._dbFns;
+  setupUI();
+});
+
+// ── UI Setup ──
+function setupUI() {
+  document.getElementById('create-room-btn').addEventListener('click', createRoom);
+  document.getElementById('join-room-btn').addEventListener('click', joinRoom);
+  document.getElementById('leave-room-btn').addEventListener('click', leaveRoom);
+  document.getElementById('btn-flip').addEventListener('click', doFlip);
+  document.getElementById('btn-stop').addEventListener('click', doStop);
+  document.getElementById('room-code-input').addEventListener('input', e => {
+    e.target.value = e.target.value.toUpperCase();
+  });
+  document.getElementById('player-name-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') createRoom();
+  });
+}
+
+// ── Screens ──
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => {
+    s.classList.toggle('hidden', s.id !== id);
+  });
+}
+
+// ── Toasts ──
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 2800);
+}
+
+// ── Create Room ──
+async function createRoom() {
+  const name = document.getElementById('player-name-input').value.trim();
+  if (!name) { showLobbyError('Enter your name first'); return; }
+  myName = name;
+  myId = genPlayerId();
+  roomCode = genCode();
+  isHost = true;
+
+  const { ref, set } = dbFns;
+  try {
+    await set(ref(db, `rooms/${roomCode}`), {
+      host: myId,
+      status: 'waiting',
+      created: Date.now(),
+      players: {
+        [myId]: { name, score: 0, joinedAt: Date.now() }
+      }
+    });
+    listenToRoom();
+    showScreen('waiting');
+    document.getElementById('display-room-code').textContent = roomCode;
+  } catch (e) {
+    showLobbyError('Failed to create room. Check Firebase config.');
+    console.error(e);
+  }
+}
+
+// ── Join Room ──
+async function joinRoom() {
+  const name = document.getElementById('player-name-input').value.trim();
+  const code = document.getElementById('room-code-input').value.trim().toUpperCase();
+  if (!name) { showLobbyError('Enter your name first'); return; }
+  if (code.length !== 4) { showLobbyError('Enter a 4-letter room code'); return; }
+
+  myName = name;
+  myId = genPlayerId();
+  roomCode = code;
+  isHost = false;
+
+  const { ref, get, update } = dbFns;
+  try {
+    const snap = await get(ref(db, `rooms/${roomCode}`));
+    if (!snap.exists()) { showLobbyError('Room not found'); return; }
+    const room = snap.val();
+    if (room.status !== 'waiting') { showLobbyError('Game already in progress'); return; }
+
+    await update(ref(db, `rooms/${roomCode}/players/${myId}`), {
+      name, score: 0, joinedAt: Date.now()
+    });
+    listenToRoom();
+    showScreen('waiting');
+    document.getElementById('display-room-code').textContent = roomCode;
+  } catch (e) {
+    showLobbyError('Failed to join room: ' + e.message);
+  }
+}
+
+function showLobbyError(msg) {
+  document.getElementById('lobby-error').textContent = msg;
+  setTimeout(() => document.getElementById('lobby-error').textContent = '', 3000);
+}
+
+// ── Leave Room ──
+async function leaveRoom() {
+  const { ref, remove, set } = dbFns;
+  await remove(ref(db, `rooms/${roomCode}/players/${myId}`));
+  unsubscribers.forEach(u => u());
+  unsubscribers = [];
+  roomCode = '';
+  showScreen('lobby');
+}
+
+// ── Listen to Room (waiting) ──
+function listenToRoom() {
+  const { ref, onValue } = dbFns;
+  const unsub = onValue(ref(db, `rooms/${roomCode}`), snap => {
+    if (!snap.exists()) {
+      toast('Room closed');
+      showScreen('lobby');
+      return;
+    }
+    const room = snap.val();
+
+    if (room.status === 'waiting') {
+      renderWaitingRoom(room);
+    } else if (room.status === 'playing') {
+      if (document.getElementById('game').classList.contains('hidden')) {
+        showScreen('game');
+        initGameUI();
+      }
+      renderGame(room);
+    } else if (room.status === 'round_end') {
+      renderRoundEnd(room);
+    } else if (room.status === 'game_over') {
+      renderGameOver(room);
+    }
+  });
+  unsubscribers.push(unsub);
+}
+
+// ── Waiting Room render ──
+function renderWaitingRoom(room) {
+  const players = room.players || {};
+  const list = document.getElementById('waiting-player-list');
+  list.innerHTML = '';
+  Object.entries(players).forEach(([id, p]) => {
+    const div = document.createElement('div');
+    div.className = 'player-item';
+    div.innerHTML = `
+      <div class="player-dot"></div>
+      <div class="player-name-tag">${escHtml(p.name)}</div>
+      ${id === room.host ? '<div class="host-badge">HOST</div>' : ''}
+      ${id === myId ? '<div class="you-badge">YOU</div>' : ''}
+    `;
+    list.appendChild(div);
+  });
+
+  const count = Object.keys(players).length;
+  document.getElementById('waiting-status').textContent = `${count} player${count !== 1 ? 's' : ''} in room`;
+
+  const wrapper = document.getElementById('start-game-wrapper');
+  if (room.host === myId) {
+    wrapper.innerHTML = count >= 2
+      ? `<button class="btn btn-primary" id="start-btn">START GAME (${count} PLAYERS)</button>`
+      : `<div class="error-msg">Need at least 2 players</div>`;
+    if (count >= 2) {
+      document.getElementById('start-btn').addEventListener('click', startGame);
+    }
+  } else {
+    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host to start...</div>`;
+  }
+}
+
+// ── Start Game ──
+async function startGame() {
+  const { ref, get, update } = dbFns;
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const room = snap.val();
+  const playerIds = Object.keys(room.players);
+  const deck = makeDeck();
+
+  const turnOrder = shuffle(playerIds);
+  const playerRound = {};
+  playerIds.forEach(id => {
+    playerRound[id] = { cards: [], status: 'active', bonusPoints: 0, hasSecondChance: false, frozen: false };
+  });
+
+  await update(ref(db, `rooms/${roomCode}`), {
+    status: 'playing',
+    round: 1,
+    deck: deck,
+    turnOrder,
+    currentTurnIndex: 0,
+    currentRound: playerRound,
+    lastCard: null,
+    log: ['Game started! Round 1 begins.'],
+  });
+}
+
+// ── Init Game UI ──
+function initGameUI() {
+  // nothing special needed
+}
+
+// ── Render Game ──
+function renderGame(room) {
+  if (!room.turnOrder) return;
+  gameState = room;
+
+  const currentPlayerId = room.turnOrder[room.currentTurnIndex % room.turnOrder.length];
+  const isMyTurn = currentPlayerId === myId;
+  const myStatus = room.currentRound?.[myId]?.status || 'active';
+  const isFrozen = room.currentRound?.[myId]?.frozen;
+
+  // Deck
+  const deckCount = room.deck ? room.deck.length : 0;
+  document.getElementById('deck-count-label').textContent = `${deckCount} left`;
+  const deckStack = document.getElementById('deck-stack');
+  deckStack.classList.toggle('active', isMyTurn && myStatus === 'active');
+
+  // Last card
+  renderLastCard(room.lastCard);
+
+  // Turn indicator
+  const turningPlayer = room.players[currentPlayerId]?.name || '?';
+  const turnEl = document.getElementById('turn-indicator');
+
+  const allDoneCounting = Object.values(room.currentRound || {}).filter(p => p.status === 'active').length;
+  if (allDoneCounting === 0) {
+    turnEl.textContent = 'All players done — round ending...';
+  } else if (isMyTurn) {
+    if (isFrozen) {
+      turnEl.innerHTML = '❄ YOUR TURN IS FROZEN — SKIP';
+    } else {
+      turnEl.textContent = '⟶ YOUR TURN';
+    }
+  } else {
+    turnEl.textContent = `${turningPlayer}'s turn`;
+  }
+
+  // Action bar
+  const actionBar = document.getElementById('action-bar');
+  if (isMyTurn && myStatus === 'active') {
+    actionBar.classList.remove('hidden');
+    if (isFrozen) {
+      document.getElementById('btn-flip').textContent = 'SKIP (FROZEN)';
+      document.getElementById('btn-stop').style.display = 'none';
+    } else {
+      document.getElementById('btn-flip').textContent = 'FLIP CARD';
+      document.getElementById('btn-stop').style.display = '';
+    }
+  } else {
+    actionBar.classList.add('hidden');
+  }
+
+  // Score strip
+  renderScoreStrip(room);
+
+  // Players grid
+  renderPlayersGrid(room, currentPlayerId);
+
+  // Round display
+  document.getElementById('round-display').textContent = room.round || 1;
+
+  // Log
+  renderLog(room.log);
+}
+
+function renderLastCard(card) {
+  const el = document.getElementById('last-flipped');
+  if (!card) { el.textContent = '—'; el.style.color = ''; return; }
+  const { text, css } = cardDisplay(card);
+  el.textContent = text;
+  el.style.color = css === 'red' ? 'var(--card-red)' : css === 'freeze' ? 'var(--flip-blue)' : css === 'bonus' ? 'var(--accent)' : 'var(--text)';
+  el.classList.add('flipping');
+  setTimeout(() => el.classList.remove('flipping'), 600);
+}
+
+function renderScoreStrip(room) {
+  const strip = document.getElementById('score-strip');
+  const scores = Object.entries(room.players || {}).map(([id, p]) => ({ id, name: p.name, score: p.score || 0 }));
+  scores.sort((a, b) => b.score - a.score);
+  const maxScore = scores[0]?.score || 0;
+
+  strip.innerHTML = scores.map(s => `
+    <div class="score-chip ${s.score === maxScore && maxScore > 0 ? 'leading' : ''} ${s.id === myId ? 'you-chip' : ''}">
+      <div class="sname">${escHtml(s.name)}${s.id === myId ? ' (you)' : ''}</div>
+      <div class="sval">${s.score}</div>
+    </div>
+  `).join('');
+}
+
+function renderPlayersGrid(room, currentPlayerId) {
+  const grid = document.getElementById('players-grid');
+  grid.innerHTML = '';
+
+  (room.turnOrder || []).forEach(id => {
+    const player = room.players[id];
+    const roundData = room.currentRound?.[id] || { cards: [], status: 'active' };
+    if (!player) return;
+
+    const cards = roundData.cards || [];
+    const status = roundData.status;
+    const score = calcScore(cards);
+    const uCount = uniqueCount(cards);
+
+    let statusLabel = '';
+    let statusCss = '';
+    if (id === currentPlayerId && status === 'active') { statusLabel = '● FLIPPING'; statusCss = 'status-flipping'; }
+    else if (status === 'stopped') { statusLabel = '■ STOPPED'; statusCss = 'status-stopped'; }
+    else if (status === 'busted') { statusLabel = '✕ BUSTED'; statusCss = 'status-busted'; }
+    else if (status === 'flip7') { statusLabel = '★ FLIP 7!'; statusCss = 'status-flipping'; }
+    else { statusLabel = '○ WAITING'; statusCss = 'status-waiting'; }
+
+    const panel = document.createElement('div');
+    panel.className = `player-panel ${id === currentPlayerId && status === 'active' ? 'active-turn' : ''} ${id === myId ? 'you-panel' : ''} ${status === 'busted' ? 'busted' : ''} ${status === 'stopped' ? 'stopped' : ''}`;
+
+    // Count duplicates for display
+    const valCounts = {};
+    cards.forEach(c => { if (c.type === 'number') valCounts[c.value] = (valCounts[c.value] || 0) + 1; });
+
+    const miniCards = cards.map(c => {
+      const { text, css } = cardDisplay(c);
+      const isDup = c.type === 'number' && valCounts[c.value] > 1;
+      return `<div class="mini-card ${css}">${text}${isDup ? '<div class="dup-indicator">!</div>' : ''}</div>`;
+    }).join('');
+
+    panel.innerHTML = `
+      <div class="panel-header">
+        <div class="panel-name">${escHtml(player.name)}${id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
+        <div class="panel-score">${score}</div>
+      </div>
+      <div class="panel-status ${statusCss}">${statusLabel} — ${uCount}/7 unique</div>
+      <div class="mini-cards">${miniCards}</div>
+      ${roundData.frozen && status === 'active' ? '<div style="color:var(--flip-blue);font-size:0.65rem;margin-top:4px">❄ FROZEN</div>' : ''}
+    `;
+    grid.appendChild(panel);
+  });
+}
+
+function renderLog(log) {
+  if (!log) return;
+  const el = document.getElementById('game-log');
+  const entries = Array.isArray(log) ? log : Object.values(log);
+  el.innerHTML = entries.slice(-20).map(l => `<div class="log-entry">${l}</div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── FLIP ──
+async function doFlip() {
+  if (!gameState) return;
+  const { ref, update, get } = dbFns;
+
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const room = snap.val();
+  if (!room || room.status !== 'playing') return;
+  if (room.turnOrder[room.currentTurnIndex % room.turnOrder.length] !== myId) return;
+
+  const myRound = room.currentRound[myId];
+  if (!myRound || myRound.status !== 'active') return;
+
+  // Handle frozen skip
+  if (myRound.frozen) {
+    const updates = {};
+    updates[`rooms/${roomCode}/currentRound/${myId}/frozen`] = false;
+    const nextIdx = (room.currentTurnIndex + 1) % room.turnOrder.length;
+    updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
+    const logEntry = `${escHtml(room.players[myId].name)} skipped (frozen)`;
+    const log = room.log || [];
+    updates[`rooms/${roomCode}/log`] = [...log, logEntry].slice(-30);
+    await update(ref(db), updates);
+    return;
+  }
+
+  if (!room.deck || room.deck.length === 0) {
+    await endRound(room);
+    return;
+  }
+
+  const deck = [...room.deck];
+  const card = deck.shift();
+  const updates = {};
+  updates[`rooms/${roomCode}/deck`] = deck;
+  updates[`rooms/${roomCode}/lastCard`] = card;
+
+  let newCards = [...(myRound.cards || [])];
+  let newStatus = 'active';
+  let logMsg = `${escHtml(room.players[myId].name)} flipped `;
+  let logClass = '';
+
+  if (card.type === 'number') {
+    const existingValues = newCards.filter(c => c.type === 'number').map(c => c.value);
+    const isDuplicate = existingValues.includes(card.value);
+
+    if (isDuplicate && myRound.hasSecondChance) {
+      // Use second chance
+      newCards = newCards.filter(c => !(c.type === 'secondchance'));
+      updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = false;
+      logMsg += `${card.value} (duplicate — Second Chance used!)`;
+    } else if (isDuplicate) {
+      newStatus = 'busted';
+      logMsg += `${card.value} — BUST! 💥`;
+    } else {
+      newCards.push(card);
+      const uCount = uniqueCount(newCards);
+      logMsg += `${card.value}`;
+      if (uCount === 7) {
+        newStatus = 'flip7';
+        logMsg += ' — FLIP 7! ★ +15 bonus';
+      }
+    }
+  } else if (card.type === 'freeze') {
+    // Freeze next active player
+    const order = room.turnOrder;
+    const myIdx = order.indexOf(myId);
+    let nextActive = null;
+    for (let i = 1; i < order.length; i++) {
+      const pid = order[(myIdx + i) % order.length];
+      if (room.currentRound[pid]?.status === 'active' && pid !== myId) {
+        nextActive = pid;
+        break;
+      }
+    }
+    if (nextActive) {
+      updates[`rooms/${roomCode}/currentRound/${nextActive}/frozen`] = true;
+      logMsg += `❄ FREEZE → ${escHtml(room.players[nextActive]?.name)} is frozen!`;
+    } else {
+      logMsg += `❄ FREEZE (no target)`;
+    }
+    newCards.push(card);
+  } else if (card.type === 'bonus2') {
+    newCards.push(card);
+    logMsg += `+2 BONUS 🌟`;
+  } else if (card.type === 'secondchance') {
+    newCards.push(card);
+    updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = true;
+    logMsg += `SECOND CHANCE saved`;
+  }
+
+  updates[`rooms/${roomCode}/currentRound/${myId}/cards`] = newCards;
+  updates[`rooms/${roomCode}/currentRound/${myId}/status`] = newStatus;
+
+  const log = room.log || [];
+  updates[`rooms/${roomCode}/log`] = [...log, logMsg].slice(-30);
+
+  if (newStatus === 'busted' || newStatus === 'flip7') {
+    // Auto-advance turn
+    const nextIdx = advanceTurn(room, room.currentTurnIndex);
+    updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
+  } else {
+    // Stay on same turn if still active, or advance if done
+    // Keep turn — player decides to flip again or stop
+  }
+
+  await update(ref(db), updates);
+
+  // Check if all players done
+  const updatedRound = { ...room.currentRound };
+  updatedRound[myId] = { ...myRound, cards: newCards, status: newStatus };
+  if (allPlayersDone(updatedRound)) {
+    setTimeout(() => endRound({ ...room, currentRound: updatedRound, deck }), 800);
+  }
+}
+
+function advanceTurn(room, currentIdx) {
+  const order = room.turnOrder;
+  const len = order.length;
+  for (let i = 1; i <= len; i++) {
+    const nextIdx = (currentIdx + i) % len;
+    const pid = order[nextIdx];
+    if (room.currentRound[pid]?.status === 'active') return nextIdx;
+  }
+  return (currentIdx + 1) % len;
+}
+
+function allPlayersDone(roundData) {
+  return Object.values(roundData).every(p => p.status !== 'active');
+}
+
+// ── STOP ──
+async function doStop() {
+  if (!gameState) return;
+  const { ref, update, get } = dbFns;
+
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const room = snap.val();
+  if (!room || room.status !== 'playing') return;
+  if (room.turnOrder[room.currentTurnIndex % room.turnOrder.length] !== myId) return;
+
+  const myRound = room.currentRound[myId];
+  if (!myRound || myRound.status !== 'active') return;
+
+  const updates = {};
+  updates[`rooms/${roomCode}/currentRound/${myId}/status`] = 'stopped';
+
+  const nextIdx = advanceTurn(room, room.currentTurnIndex);
+  updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
+
+  const log = room.log || [];
+  const score = calcScore(myRound.cards || []);
+  const msg = `${escHtml(room.players[myId].name)} stopped with ${score} pts`;
+  updates[`rooms/${roomCode}/log`] = [...log, msg].slice(-30);
+
+  await update(ref(db), updates);
+
+  const updatedRound = { ...room.currentRound, [myId]: { ...myRound, status: 'stopped' } };
+  if (allPlayersDone(updatedRound)) {
+    setTimeout(() => endRound({ ...room, currentRound: updatedRound }), 600);
+  }
+}
+
+// ── End Round ──
+async function endRound(room) {
+  if (!isHost) return; // Only host ends the round
+  const { ref, update, get } = dbFns;
+
+  // Refresh state
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const freshRoom = snap.val();
+  if (!freshRoom || freshRoom.status !== 'playing') return;
+
+  const roundData = freshRoom.currentRound || {};
+  const players = freshRoom.players || {};
+
+  // Calculate round scores
+  const roundScores = {};
+  Object.entries(roundData).forEach(([id, rd]) => {
+    if (rd.status === 'busted') {
+      roundScores[id] = 0;
+    } else {
+      let sc = calcScore(rd.cards || []);
+      if (rd.status === 'flip7') sc += 15;
+      roundScores[id] = sc;
+    }
+  });
+
+  // Update total scores
+  const updatedPlayers = { ...players };
+  Object.entries(roundScores).forEach(([id, sc]) => {
+    if (updatedPlayers[id]) {
+      updatedPlayers[id] = { ...updatedPlayers[id], score: (updatedPlayers[id].score || 0) + sc };
+    }
+  });
+
+  const updates = {};
+  Object.entries(updatedPlayers).forEach(([id, p]) => {
+    updates[`rooms/${roomCode}/players/${id}/score`] = p.score;
+  });
+
+  updates[`rooms/${roomCode}/roundScores`] = roundScores;
+
+  // Check game over
+  const gameOver = Object.values(updatedPlayers).some(p => p.score >= WINNING_SCORE)
+    || (freshRoom.round || 1) >= ROUNDS_LIMIT;
+
+  if (gameOver) {
+    updates[`rooms/${roomCode}/status`] = 'game_over';
+  } else {
+    updates[`rooms/${roomCode}/status`] = 'round_end';
+  }
+
+  await update(ref(db), updates);
+}
+
+// ── Round End Render ──
+function renderRoundEnd(room) {
+  showScreen('round-end');
+  document.getElementById('round-end-title').textContent = `ROUND ${room.round} OVER`;
+  document.getElementById('game-over-winner').classList.add('hidden');
+
+  const roundScores = room.roundScores || {};
+  const players = room.players || {};
+
+  const results = Object.entries(players).map(([id, p]) => ({
+    id, name: p.name, totalScore: p.score || 0, roundScore: roundScores[id] || 0,
+    status: room.currentRound?.[id]?.status
+  }));
+  results.sort((a, b) => b.totalScore - a.totalScore);
+
+  const resultsEl = document.getElementById('round-results');
+  resultsEl.innerHTML = results.map((r, i) => `
+    <div class="result-row">
+      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
+      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
+      <div>
+        <div class="result-pts">${r.totalScore}</div>
+        <div class="result-delta">+${r.roundScore} this round</div>
+        ${r.status === 'busted' ? '<div class="result-busted">busted</div>' : ''}
+        ${r.status === 'flip7' ? '<div style="color:var(--accent);font-size:0.65rem">★ FLIP 7</div>' : ''}
+      </div>
+    </div>
+  `).join('');
+
+  document.getElementById('round-end-subtitle').textContent = `First to ${WINNING_SCORE} wins`;
+
+  const wrapper = document.getElementById('next-round-wrapper');
+  if (room.host === myId) {
+    wrapper.innerHTML = `<button class="btn btn-primary" id="next-round-btn">START ROUND ${(room.round || 1) + 1}</button>`;
+    document.getElementById('next-round-btn').addEventListener('click', startNextRound);
+  } else {
+    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host to start next round...</div>`;
+  }
+}
+
+// ── Game Over Render ──
+function renderGameOver(room) {
+  showScreen('round-end');
+  document.getElementById('round-end-title').textContent = 'GAME OVER';
+  document.getElementById('round-end-subtitle').textContent = '';
+
+  const players = room.players || {};
+  const results = Object.entries(players).map(([id, p]) => ({ id, name: p.name, totalScore: p.score || 0 }));
+  results.sort((a, b) => b.totalScore - a.totalScore);
+
+  const winner = results[0];
+  const winnerEl = document.getElementById('game-over-winner');
+  winnerEl.textContent = `🏆 ${winner.name} wins!`;
+  winnerEl.classList.remove('hidden');
+
+  const resultsEl = document.getElementById('round-results');
+  resultsEl.innerHTML = results.map((r, i) => `
+    <div class="result-row">
+      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
+      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
+      <div class="result-pts">${r.totalScore}</div>
+    </div>
+  `).join('');
+
+  const wrapper = document.getElementById('next-round-wrapper');
+  if (room.host === myId) {
+    wrapper.innerHTML = `<button class="btn btn-primary" id="new-game-btn">NEW GAME</button>`;
+    document.getElementById('new-game-btn').addEventListener('click', startNewGame);
+  } else {
+    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host...</div>`;
+  }
+}
+
+// ── Next Round ──
+async function startNextRound() {
+  const { ref, get, update } = dbFns;
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const room = snap.val();
+  const playerIds = Object.keys(room.players || {});
+  const deck = makeDeck();
+  const turnOrder = shuffle(playerIds);
+  const playerRound = {};
+  playerIds.forEach(id => {
+    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false, frozen: false };
+  });
+
+  await update(ref(db, `rooms/${roomCode}`), {
+    status: 'playing',
+    round: (room.round || 1) + 1,
+    deck, turnOrder,
+    currentTurnIndex: 0,
+    currentRound: playerRound,
+    lastCard: null,
+    roundScores: null,
+    log: [`Round ${(room.round || 1) + 1} started!`],
+  });
+  showScreen('game');
+}
+
+// ── New Game ──
+async function startNewGame() {
+  const { ref, get, update } = dbFns;
+  const snap = await get(ref(db, `rooms/${roomCode}`));
+  const room = snap.val();
+  const playerIds = Object.keys(room.players || {});
+  const players = room.players || {};
+
+  // Reset scores
+  const resetPlayers = {};
+  playerIds.forEach(id => {
+    resetPlayers[id] = { ...players[id], score: 0 };
+  });
+
+  const deck = makeDeck();
+  const turnOrder = shuffle(playerIds);
+  const playerRound = {};
+  playerIds.forEach(id => {
+    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false, frozen: false };
+  });
+
+  await update(ref(db, `rooms/${roomCode}`), {
+    status: 'playing',
+    round: 1,
+    deck, turnOrder,
+    currentTurnIndex: 0,
+    currentRound: playerRound,
+    players: resetPlayers,
+    lastCard: null,
+    roundScores: null,
+    log: ['New game started!'],
+  });
+  showScreen('game');
+}
+
+// ── Rules Modal ──
+function showRules() { document.getElementById('rules-modal').classList.remove('hidden'); }
+function hideRules() { document.getElementById('rules-modal').classList.add('hidden'); }
+
+// ── Utility ──
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
