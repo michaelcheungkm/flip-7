@@ -1140,7 +1140,7 @@ function toast(msg) {
 async function createRoom() {
   const name = document.getElementById('player-name-input').value.trim();
   if (!name) { showLobbyError('Enter your name first'); return; }
-  myName = name;
+  myName = stripTags(name);
   myId = genPlayerId();
   roomCode = genCode();
   isHost = true;
@@ -1171,7 +1171,7 @@ async function joinRoom() {
   if (!name) { showLobbyError('Enter your name first'); return; }
   if (code.length !== 4) { showLobbyError('Enter a 4-letter room code'); return; }
 
-  myName = name;
+  myName = stripTags(name);
   myId = genPlayerId();
   roomCode = code;
   isHost = false;
@@ -1464,7 +1464,7 @@ function renderLog(log) {
   if (!log) return;
   const el = document.getElementById('game-log');
   const entries = Array.isArray(log) ? log : Object.values(log);
-  el.innerHTML = entries.slice(-20).map(l => `<div class="log-entry">${l}</div>`).join('');
+  el.innerHTML = entries.slice(-20).map(l => `<div class="log-entry">${escHtml(l)}</div>`).join('');
   el.scrollTop = el.scrollHeight;
 }
 
@@ -1518,7 +1518,7 @@ async function doFlip() {
 
   let newCards = [...(myRound.cards || [])];
   let newStatus = 'active';
-  let logMsg = `${room.players[myId].name} flipped `;
+  let logMsg = `${escHtml(room.players[myId].name)} flipped `;
   let frozenTarget = null; // set if a freeze card hits another player
   let stayOnTurn = false;  // set if card lets player stay (bonus2)
 
@@ -1554,7 +1554,7 @@ async function doFlip() {
     if (freezeTarget) {
       updates[`rooms/${roomCode}/currentRound/${freezeTarget}/status`] = 'frozen';
       frozenTarget = freezeTarget; // tracked below for simRound
-      logMsg += `❄ FREEZE — ${room.players[freezeTarget]?.name} is frozen for this round!`;
+      logMsg += `❄ FREEZE — ${escHtml(room.players[freezeTarget]?.name || '?')} is frozen for this round!`;
     } else {
       logMsg += `❄ FREEZE — no other active player to freeze.`;
     }
@@ -1617,7 +1617,7 @@ async function doStop() {
 
   const log = room.log || [];
   const score = calcScore(myRound.cards || []);
-  updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} stopped with ${score} pts.`].slice(-40);
+  updates[`rooms/${roomCode}/log`] = [...log, `${escHtml(room.players[myId].name)} stopped with ${score} pts.`].slice(-40);
   await update(ref(db), updates);
 
   if (allPlayersDone(simRound)) {
@@ -1727,7 +1727,7 @@ function renderGameOver(room) {
 
   const winner = results[0];
   const winnerEl = document.getElementById('game-over-winner');
-  winnerEl.textContent = `🏆 ${winner.name} wins!`;
+  winnerEl.textContent = `🏆 ${winner.name} wins!`;  // textContent — inherently safe
   winnerEl.classList.remove('hidden');
 
   document.getElementById('round-results').innerHTML = results.map((r, i) => `
@@ -1768,7 +1768,7 @@ async function startNextRound() {
     currentRound: playerRound,
     lastCard: null,
     roundScores: null,
-    log: [`Round ${(room.round || 1) + 1} started!`],
+    log: [`Round ${Number(room.round || 1) + 1} started!`],
   });
   showScreen('game');
 }
@@ -1815,18 +1815,22 @@ function hideRules() { document.getElementById('rules-modal').classList.add('hid
 // ── Emojis ──
 let lastRenderedEmojis = {};
 
+const ALLOWED_EMOJIS = new Set(['👍', '😂', '😭', '😡']);
+
 async function sendEmoji(emoji) {
   if (!roomCode || !myId) return;
+  if (!ALLOWED_EMOJIS.has(emoji)) return; // reject anything not in the allowed set
   const { ref, update } = dbFns;
   const key = `${myId}_${Date.now()}`;
   await update(ref(db, `rooms/${roomCode}/emojis`), {
-    [key]: { emoji, name: myName, ts: Date.now() }
+    [key]: { emoji, name: escHtml(myName), ts: Date.now() }
   });
 }
 
 
 
 function spawnEmojiFloat(emoji, name) {
+  if (!ALLOWED_EMOJIS.has(emoji)) return; // never render unknown values from DB
   const el = document.createElement('div');
   el.className = 'emoji-float';
   el.textContent = emoji;
@@ -1847,7 +1851,19 @@ function spawnEmojiFloat(emoji, name) {
 
 // ── Utility ──
 function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Strip all HTML tags from user input before storing in Firebase
+function stripTags(s) {
+  return String(s).replace(/<[^>]*>/g, '').replace(/[<>'"&]/g, c => ({
+    '<': '', '>': '', "'": '', '"': '', '&': ''
+  })[c] || c).trim().slice(0, 16);
 }
 </script>
 </body>
