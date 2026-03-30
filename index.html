@@ -1206,10 +1206,10 @@ function renderWaitingRoom(room) {
 
   const wrapper = document.getElementById('start-game-wrapper');
   if (room.host === myId) {
-    wrapper.innerHTML = count >= 2
-      ? `<button class="btn btn-primary" id="start-btn">START GAME (${count} PLAYERS)</button>`
-      : `<div class="error-msg">Need at least 2 players</div>`;
-    if (count >= 2) {
+    wrapper.innerHTML = count >= 1
+      ? `<button class="btn btn-primary" id="start-btn">START GAME (${count} PLAYER${count !== 1 ? 'S' : ''})</button>`
+      : `<div class="error-msg">Need at least 1 player</div>`;
+    if (count >= 1) {
       document.getElementById('start-btn').addEventListener('click', startGame);
     }
   } else {
@@ -1437,6 +1437,7 @@ async function doFlip() {
   let newCards = [...(myRound.cards || [])];
   let newStatus = 'active';
   let logMsg = `${room.players[myId].name} flipped `;
+  let frozenTarget = null; // set if a freeze card hits another player
 
   if (card.type === 'number') {
     const heldValues = newCards.filter(c => c.type === 'number').map(c => c.value);
@@ -1459,18 +1460,18 @@ async function doFlip() {
       }
     }
   } else if (card.type === 'freeze') {
-    // Find the next active player after the current one and freeze them
+    // Find the next active player (not self) and freeze them permanently this round
     const order = room.turnOrder;
     const myIdx = order.indexOf(myId);
-    let target = null;
+    let freezeTarget = null;
     for (let i = 1; i < order.length; i++) {
       const pid = order[(myIdx + i) % order.length];
-      if (room.currentRound[pid]?.status === 'active' && pid !== myId) { target = pid; break; }
+      if (room.currentRound[pid]?.status === 'active' && pid !== myId) { freezeTarget = pid; break; }
     }
-    if (target) {
-      // Set target status to 'frozen' — they are done for this round
-      updates[`rooms/${roomCode}/currentRound/${target}/status`] = 'frozen';
-      logMsg += `❄ FREEZE — ${room.players[target]?.name} is frozen out for this round!`;
+    if (freezeTarget) {
+      updates[`rooms/${roomCode}/currentRound/${freezeTarget}/status`] = 'frozen';
+      frozenTarget = freezeTarget; // tracked below for simRound
+      logMsg += `❄ FREEZE — ${room.players[freezeTarget]?.name} is frozen for this round!`;
     } else {
       logMsg += `❄ FREEZE — no other active player to freeze.`;
     }
@@ -1487,8 +1488,13 @@ async function doFlip() {
   updates[`rooms/${roomCode}/currentRound/${myId}/cards`] = newCards;
   updates[`rooms/${roomCode}/currentRound/${myId}/status`] = newStatus;
 
+  // Build a fully-accurate simulated round that includes ALL changes made this action
+  // (own new status + any freeze target status) so advanceTurn and allPlayersDone are correct.
+  const simRound = { ...room.currentRound };
+  simRound[myId] = { ...myRound, cards: newCards, status: newStatus };
+  if (frozenTarget) simRound[frozenTarget] = { ...simRound[frozenTarget], status: 'frozen' };
+
   // ALWAYS advance to the next active player after every flip
-  const simRound = { ...room.currentRound, [myId]: { ...myRound, cards: newCards, status: newStatus } };
   updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
 
   const log = room.log || [];
