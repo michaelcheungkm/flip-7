@@ -975,12 +975,14 @@ let unsubscribers = [];
 let isFrozenThisTurn = false;
 
 // ── Card deck generation ──
+// Deck: value N appears N times (1×1, 2×2, ..., 12×12 = 78 number cards)
+// Plus special action cards
 function makeDeck() {
   const cards = [];
-  // Numbers 1-12, 4 suits each
+  // Weighted number cards: N copies of each value N
   for (let v = 1; v <= 12; v++) {
-    for (let s = 0; s < 4; s++) {
-      cards.push({ type: 'number', value: v, suit: s });
+    for (let c = 0; c < v; c++) {
+      cards.push({ type: 'number', value: v });
     }
   }
   // Special cards
@@ -1390,7 +1392,29 @@ function renderLog(log) {
   el.scrollTop = el.scrollHeight;
 }
 
+// ── Helpers ──
+// Advance currentTurnIndex to the next player who is still 'active'. Wraps around.
+function advanceTurn(room, currentIdx) {
+  const order = room.turnOrder;
+  const len = order.length;
+  for (let i = 1; i <= len; i++) {
+    const nextIdx = (currentIdx + i) % len;
+    const pid = order[nextIdx];
+    if (room.currentRound[pid]?.status === 'active') return nextIdx;
+  }
+  return currentIdx; // no active players found
+}
+
+function allPlayersDone(roundData) {
+  return Object.values(roundData).every(p => p.status !== 'active');
+}
+
 // ── FLIP ──
+// Current player draws one card. Their turn CONTINUES until they:
+//   • choose STOP (voluntary)
+//   • BUST (drew a duplicate number without a Second Chance)
+//   • hit FLIP 7 (7 unique number values)
+// Turn only advances on STOP / BUST / FLIP7.
 async function doFlip() {
   if (!gameState) return;
   const { ref, update, get } = dbFns;
@@ -1398,26 +1422,27 @@ async function doFlip() {
   const snap = await get(ref(db, `rooms/${roomCode}`));
   const room = snap.val();
   if (!room || room.status !== 'playing') return;
-  if (room.turnOrder[room.currentTurnIndex % room.turnOrder.length] !== myId) return;
+
+  const currentPlayerId = room.turnOrder[room.currentTurnIndex % room.turnOrder.length];
+  if (currentPlayerId !== myId) return;
 
   const myRound = room.currentRound[myId];
   if (!myRound || myRound.status !== 'active') return;
 
-  // Handle frozen skip
+  // ── Frozen: entire turn is skipped, advance to next player ──
   if (myRound.frozen) {
     const updates = {};
     updates[`rooms/${roomCode}/currentRound/${myId}/frozen`] = false;
-    const nextIdx = (room.currentTurnIndex + 1) % room.turnOrder.length;
-    updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
-    const logEntry = `${escHtml(room.players[myId].name)} skipped (frozen)`;
+    const fakeRound = { ...room.currentRound, [myId]: { ...myRound, frozen: false } };
+    updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: fakeRound }, room.currentTurnIndex);
     const log = room.log || [];
-    updates[`rooms/${roomCode}/log`] = [...log, logEntry].slice(-30);
+    updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} was frozen — skipping turn!`].slice(-40);
     await update(ref(db), updates);
     return;
   }
 
   if (!room.deck || room.deck.length === 0) {
-    await endRound(room);
+    await endRound();
     return;
   }
 
@@ -1428,100 +1453,80 @@ async function doFlip() {
   updates[`rooms/${roomCode}/lastCard`] = card;
 
   let newCards = [...(myRound.cards || [])];
-  let newStatus = 'active';
-  let logMsg = `${escHtml(room.players[myId].name)} flipped `;
-  let logClass = '';
+  let newStatus = 'active'; // player keeps turn by default
+  let logMsg = `${room.players[myId].name} flipped `;
+  let turnAdvances = false; // only true on bust or flip7
 
   if (card.type === 'number') {
-    const existingValues = newCards.filter(c => c.type === 'number').map(c => c.value);
-    const isDuplicate = existingValues.includes(card.value);
+    const heldValues = newCards.filter(c => c.type === 'number').map(c => c.value);
+    const isDuplicate = heldValues.includes(card.value);
 
     if (isDuplicate && myRound.hasSecondChance) {
-      // Use second chance
-      newCards = newCards.filter(c => !(c.type === 'secondchance'));
+      // Burn the second-chance card; player survives and keeps their turn
+      newCards = newCards.filter(c => c.type !== 'secondchance');
       updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = false;
-      logMsg += `${card.value} (duplicate — Second Chance used!)`;
+      logMsg += `${card.value} — duplicate! Second Chance used, still safe ✓ (still your turn)`;
     } else if (isDuplicate) {
       newStatus = 'busted';
-      logMsg += `${card.value} — BUST! 💥`;
+      turnAdvances = true;
+      logMsg += `${card.value} — BUST! 💥 Turn passes.`;
     } else {
       newCards.push(card);
       const uCount = uniqueCount(newCards);
-      logMsg += `${card.value}`;
+      logMsg += `${card.value} (${uCount}/7 unique)`;
       if (uCount === 7) {
         newStatus = 'flip7';
-        logMsg += ' — FLIP 7! ★ +15 bonus';
+        turnAdvances = true;
+        logMsg += ' — FLIP 7! ★ +15 bonus! Turn passes.';
+      } else {
+        logMsg += ' — flip again or stop.';
       }
     }
   } else if (card.type === 'freeze') {
-    // Freeze next active player
+    // Tag the next active player (not self) to lose their next turn
     const order = room.turnOrder;
     const myIdx = order.indexOf(myId);
-    let nextActive = null;
+    let target = null;
     for (let i = 1; i < order.length; i++) {
       const pid = order[(myIdx + i) % order.length];
-      if (room.currentRound[pid]?.status === 'active' && pid !== myId) {
-        nextActive = pid;
-        break;
-      }
+      if (room.currentRound[pid]?.status === 'active' && pid !== myId) { target = pid; break; }
     }
-    if (nextActive) {
-      updates[`rooms/${roomCode}/currentRound/${nextActive}/frozen`] = true;
-      logMsg += `❄ FREEZE → ${escHtml(room.players[nextActive]?.name)} is frozen!`;
+    if (target) {
+      updates[`rooms/${roomCode}/currentRound/${target}/frozen`] = true;
+      logMsg += `\u2744 FREEZE — ${room.players[target]?.name} loses their next turn! (still your turn)`;
     } else {
-      logMsg += `❄ FREEZE (no target)`;
+      logMsg += `\u2744 FREEZE — no other active player to freeze. (still your turn)`;
     }
     newCards.push(card);
   } else if (card.type === 'bonus2') {
     newCards.push(card);
-    logMsg += `+2 BONUS 🌟`;
+    logMsg += `+2 BONUS \uD83C\uDF1F (still your turn)`;
   } else if (card.type === 'secondchance') {
     newCards.push(card);
     updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = true;
-    logMsg += `SECOND CHANCE saved`;
+    logMsg += `SECOND CHANCE saved for later! (still your turn)`;
   }
 
   updates[`rooms/${roomCode}/currentRound/${myId}/cards`] = newCards;
   updates[`rooms/${roomCode}/currentRound/${myId}/status`] = newStatus;
 
-  const log = room.log || [];
-  updates[`rooms/${roomCode}/log`] = [...log, logMsg].slice(-30);
-
-  if (newStatus === 'busted' || newStatus === 'flip7') {
-    // Auto-advance turn
-    const nextIdx = advanceTurn(room, room.currentTurnIndex);
-    updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
-  } else {
-    // Stay on same turn if still active, or advance if done
-    // Keep turn — player decides to flip again or stop
+  if (turnAdvances) {
+    const simRound = { ...room.currentRound, [myId]: { ...myRound, status: newStatus } };
+    updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
   }
 
+  const log = room.log || [];
+  updates[`rooms/${roomCode}/log`] = [...log, logMsg].slice(-40);
   await update(ref(db), updates);
 
-  // Check if all players done
-  const updatedRound = { ...room.currentRound };
-  updatedRound[myId] = { ...myRound, cards: newCards, status: newStatus };
+  const updatedRound = { ...room.currentRound, [myId]: { ...myRound, cards: newCards, status: newStatus } };
   if (allPlayersDone(updatedRound)) {
-    setTimeout(() => endRound({ ...room, currentRound: updatedRound, deck }), 800);
+    setTimeout(() => endRound(), 800);
   }
-}
-
-function advanceTurn(room, currentIdx) {
-  const order = room.turnOrder;
-  const len = order.length;
-  for (let i = 1; i <= len; i++) {
-    const nextIdx = (currentIdx + i) % len;
-    const pid = order[nextIdx];
-    if (room.currentRound[pid]?.status === 'active') return nextIdx;
-  }
-  return (currentIdx + 1) % len;
-}
-
-function allPlayersDone(roundData) {
-  return Object.values(roundData).every(p => p.status !== 'active');
 }
 
 // ── STOP ──
+// Player banks their cards. Turn advances to next active player.
 async function doStop() {
   if (!gameState) return;
   const { ref, update, get } = dbFns;
@@ -1529,7 +1534,9 @@ async function doStop() {
   const snap = await get(ref(db, `rooms/${roomCode}`));
   const room = snap.val();
   if (!room || room.status !== 'playing') return;
-  if (room.turnOrder[room.currentTurnIndex % room.turnOrder.length] !== myId) return;
+
+  const currentPlayerId = room.turnOrder[room.currentTurnIndex % room.turnOrder.length];
+  if (currentPlayerId !== myId) return;
 
   const myRound = room.currentRound[myId];
   if (!myRound || myRound.status !== 'active') return;
@@ -1537,36 +1544,41 @@ async function doStop() {
   const updates = {};
   updates[`rooms/${roomCode}/currentRound/${myId}/status`] = 'stopped';
 
-  const nextIdx = advanceTurn(room, room.currentTurnIndex);
-  updates[`rooms/${roomCode}/currentTurnIndex`] = nextIdx;
+  const simRound = { ...room.currentRound, [myId]: { ...myRound, status: 'stopped' } };
+  updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
 
   const log = room.log || [];
   const score = calcScore(myRound.cards || []);
-  const msg = `${escHtml(room.players[myId].name)} stopped with ${score} pts`;
-  updates[`rooms/${roomCode}/log`] = [...log, msg].slice(-30);
-
+  updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} stopped with ${score} pts — turn passes.`].slice(-40);
   await update(ref(db), updates);
 
   const updatedRound = { ...room.currentRound, [myId]: { ...myRound, status: 'stopped' } };
   if (allPlayersDone(updatedRound)) {
-    setTimeout(() => endRound({ ...room, currentRound: updatedRound }), 600);
+    setTimeout(() => endRound(), 600);
   }
 }
 
 // ── End Round ──
-async function endRound(room) {
-  if (!isHost) return; // Only host ends the round
-  const { ref, update, get } = dbFns;
+// Any player can trigger this; a Firebase transaction ensures only one client writes.
+async function endRound() {
+  const { ref, update, get, runTransaction } = dbFns;
 
-  // Refresh state
+  // Atomic guard: only the first caller transitions status from 'playing' → 'ending'
+  const guardRef = ref(db, `rooms/${roomCode}/status`);
+  let shouldProceed = false;
+  await runTransaction(guardRef, current => {
+    if (current === 'playing') { shouldProceed = true; return 'ending'; }
+    return undefined; // abort transaction if already transitioned
+  });
+  if (!shouldProceed) return;
+
   const snap = await get(ref(db, `rooms/${roomCode}`));
   const freshRoom = snap.val();
-  if (!freshRoom || freshRoom.status !== 'playing') return;
+  if (!freshRoom) return;
 
   const roundData = freshRoom.currentRound || {};
   const players = freshRoom.players || {};
 
-  // Calculate round scores
   const roundScores = {};
   Object.entries(roundData).forEach(([id, rd]) => {
     if (rd.status === 'busted') {
@@ -1578,105 +1590,22 @@ async function endRound(room) {
     }
   });
 
-  // Update total scores
-  const updatedPlayers = { ...players };
-  Object.entries(roundScores).forEach(([id, sc]) => {
-    if (updatedPlayers[id]) {
-      updatedPlayers[id] = { ...updatedPlayers[id], score: (updatedPlayers[id].score || 0) + sc };
-    }
-  });
-
   const updates = {};
-  Object.entries(updatedPlayers).forEach(([id, p]) => {
-    updates[`rooms/${roomCode}/players/${id}/score`] = p.score;
+  Object.entries(roundScores).forEach(([id, sc]) => {
+    const prev = players[id]?.score || 0;
+    updates[`rooms/${roomCode}/players/${id}/score`] = prev + sc;
   });
-
   updates[`rooms/${roomCode}/roundScores`] = roundScores;
 
-  // Check game over
-  const gameOver = Object.values(updatedPlayers).some(p => p.score >= WINNING_SCORE)
+  const newTotals = {};
+  Object.entries(players).forEach(([id, p]) => {
+    newTotals[id] = (p.score || 0) + (roundScores[id] || 0);
+  });
+  const gameOver = Object.values(newTotals).some(s => s >= WINNING_SCORE)
     || (freshRoom.round || 1) >= ROUNDS_LIMIT;
 
-  if (gameOver) {
-    updates[`rooms/${roomCode}/status`] = 'game_over';
-  } else {
-    updates[`rooms/${roomCode}/status`] = 'round_end';
-  }
-
+  updates[`rooms/${roomCode}/status`] = gameOver ? 'game_over' : 'round_end';
   await update(ref(db), updates);
-}
-
-// ── Round End Render ──
-function renderRoundEnd(room) {
-  showScreen('round-end');
-  document.getElementById('round-end-title').textContent = `ROUND ${room.round} OVER`;
-  document.getElementById('game-over-winner').classList.add('hidden');
-
-  const roundScores = room.roundScores || {};
-  const players = room.players || {};
-
-  const results = Object.entries(players).map(([id, p]) => ({
-    id, name: p.name, totalScore: p.score || 0, roundScore: roundScores[id] || 0,
-    status: room.currentRound?.[id]?.status
-  }));
-  results.sort((a, b) => b.totalScore - a.totalScore);
-
-  const resultsEl = document.getElementById('round-results');
-  resultsEl.innerHTML = results.map((r, i) => `
-    <div class="result-row">
-      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
-      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
-      <div>
-        <div class="result-pts">${r.totalScore}</div>
-        <div class="result-delta">+${r.roundScore} this round</div>
-        ${r.status === 'busted' ? '<div class="result-busted">busted</div>' : ''}
-        ${r.status === 'flip7' ? '<div style="color:var(--accent);font-size:0.65rem">★ FLIP 7</div>' : ''}
-      </div>
-    </div>
-  `).join('');
-
-  document.getElementById('round-end-subtitle').textContent = `First to ${WINNING_SCORE} wins`;
-
-  const wrapper = document.getElementById('next-round-wrapper');
-  if (room.host === myId) {
-    wrapper.innerHTML = `<button class="btn btn-primary" id="next-round-btn">START ROUND ${(room.round || 1) + 1}</button>`;
-    document.getElementById('next-round-btn').addEventListener('click', startNextRound);
-  } else {
-    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host to start next round...</div>`;
-  }
-}
-
-// ── Game Over Render ──
-function renderGameOver(room) {
-  showScreen('round-end');
-  document.getElementById('round-end-title').textContent = 'GAME OVER';
-  document.getElementById('round-end-subtitle').textContent = '';
-
-  const players = room.players || {};
-  const results = Object.entries(players).map(([id, p]) => ({ id, name: p.name, totalScore: p.score || 0 }));
-  results.sort((a, b) => b.totalScore - a.totalScore);
-
-  const winner = results[0];
-  const winnerEl = document.getElementById('game-over-winner');
-  winnerEl.textContent = `🏆 ${winner.name} wins!`;
-  winnerEl.classList.remove('hidden');
-
-  const resultsEl = document.getElementById('round-results');
-  resultsEl.innerHTML = results.map((r, i) => `
-    <div class="result-row">
-      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
-      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
-      <div class="result-pts">${r.totalScore}</div>
-    </div>
-  `).join('');
-
-  const wrapper = document.getElementById('next-round-wrapper');
-  if (room.host === myId) {
-    wrapper.innerHTML = `<button class="btn btn-primary" id="new-game-btn">NEW GAME</button>`;
-    document.getElementById('new-game-btn').addEventListener('click', startNewGame);
-  } else {
-    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host...</div>`;
-  }
 }
 
 // ── Next Round ──
