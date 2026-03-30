@@ -1212,6 +1212,9 @@ async function leaveRoom() {
 // ── Listen to Room (waiting) ──
 function listenToRoom() {
   const { ref, onValue } = dbFns;
+
+  // ── Main game listener (ignores emoji-only updates) ──
+  let lastGameHash = null;
   const unsub = onValue(ref(db, `rooms/${roomCode}`), snap => {
     if (!snap.exists()) {
       toast('Room closed');
@@ -1219,6 +1222,15 @@ function listenToRoom() {
       return;
     }
     const room = snap.val();
+
+    // Build a hash of everything except the emojis sub-key.
+    // If only emojis changed, skip re-rendering the game.
+    const { emojis: _emojis, ...roomWithoutEmojis } = room;
+    const gameHash = JSON.stringify(roomWithoutEmojis);
+    const gameDataChanged = gameHash !== lastGameHash;
+    lastGameHash = gameHash;
+
+    if (!gameDataChanged) return; // emoji-only update — skip full render
 
     if (room.status === 'waiting') {
       renderWaitingRoom(room);
@@ -1235,6 +1247,20 @@ function listenToRoom() {
     }
   });
   unsubscribers.push(unsub);
+
+  // ── Separate emoji listener — only spawns floats, never re-renders game ──
+  const emojiUnsub = onValue(ref(db, `rooms/${roomCode}/emojis`), snap => {
+    if (!snap.exists()) return;
+    const emojis = snap.val() || {};
+    const now = Date.now();
+    Object.entries(emojis).forEach(([key, e]) => {
+      if (lastRenderedEmojis[key]) return;
+      if (now - e.ts > 4000) return;
+      lastRenderedEmojis[key] = true;
+      spawnEmojiFloat(e.emoji, e.name);
+    });
+  });
+  unsubscribers.push(emojiUnsub);
 }
 
 // ── Waiting Room render ──
@@ -1358,9 +1384,6 @@ function renderGame(room) {
 
   // Emoji bar always visible during game
   document.getElementById('emoji-bar').classList.remove('hidden');
-
-  // Render floating emoji reactions
-  renderEmojiReactions(room);
 }
 
 function renderLastCard(card) {
@@ -1801,20 +1824,7 @@ async function sendEmoji(emoji) {
   });
 }
 
-function renderEmojiReactions(room) {
-  const emojis = room.emojis || {};
-  const now = Date.now();
-  Object.entries(emojis).forEach(([key, e]) => {
-    if (lastRenderedEmojis[key]) return; // already shown
-    if (now - e.ts > 4000) return; // too old
-    lastRenderedEmojis[key] = true;
-    spawnEmojiFloat(e.emoji, e.name);
-  });
-  // Prune old keys to avoid memory leak
-  Object.keys(lastRenderedEmojis).forEach(k => {
-    if (!emojis[k]) delete lastRenderedEmojis[k];
-  });
-}
+
 
 function spawnEmojiFloat(emoji, name) {
   const el = document.createElement('div');
