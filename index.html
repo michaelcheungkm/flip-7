@@ -979,7 +979,9 @@ let isFrozenThisTurn = false;
 // Plus special action cards
 function makeDeck() {
   const cards = [];
-  // Weighted number cards: N copies of each value N
+  // One 0 card
+  cards.push({ type: 'number', value: 0 });
+  // Weighted number cards: N copies of each value N (1×1, 2×2, ... 12×12)
   for (let v = 1; v <= 12; v++) {
     for (let c = 0; c < v; c++) {
       cards.push({ type: 'number', value: v });
@@ -1438,6 +1440,7 @@ async function doFlip() {
   let newStatus = 'active';
   let logMsg = `${room.players[myId].name} flipped `;
   let frozenTarget = null; // set if a freeze card hits another player
+  let stayOnTurn = false;  // set if card lets player stay (bonus2)
 
   if (card.type === 'number') {
     const heldValues = newCards.filter(c => c.type === 'number').map(c => c.value);
@@ -1478,7 +1481,8 @@ async function doFlip() {
     newCards.push(card);
   } else if (card.type === 'bonus2') {
     newCards.push(card);
-    logMsg += `+2 BONUS 🌟`;
+    logMsg += `+2 BONUS 🌟 (stay on your turn — flip again or stop)`;
+    stayOnTurn = true;
   } else if (card.type === 'secondchance') {
     newCards.push(card);
     updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = true;
@@ -1494,8 +1498,10 @@ async function doFlip() {
   simRound[myId] = { ...myRound, cards: newCards, status: newStatus };
   if (frozenTarget) simRound[frozenTarget] = { ...simRound[frozenTarget], status: 'frozen' };
 
-  // ALWAYS advance to the next active player after every flip
-  updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
+  // Advance turn unless player drew a +2 (they stay and flip again or stop)
+  if (!stayOnTurn) {
+    updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
+  }
 
   const log = room.log || [];
   updates[`rooms/${roomCode}/log`] = [...log, logMsg].slice(-40);
@@ -1560,7 +1566,7 @@ async function endRound() {
 
   const roundScores = {};
   Object.entries(roundData).forEach(([id, rd]) => {
-    if (rd.status === 'busted' || rd.status === 'frozen') {
+    if (rd.status === 'busted') {
       roundScores[id] = 0;
     } else {
       let sc = calcScore(rd.cards || []);
