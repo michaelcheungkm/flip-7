@@ -1169,12 +1169,12 @@ function listenToRoom() {
 
     if (room.status === 'waiting') {
       renderWaitingRoom(room);
-    } else if (room.status === 'playing') {
+    } else if (room.status === 'playing' || room.status === 'ending') {
       if (document.getElementById('game').classList.contains('hidden')) {
         showScreen('game');
         initGameUI();
       }
-      renderGame(room);
+      if (room.status === 'playing') renderGame(room);
     } else if (room.status === 'round_end') {
       renderRoundEnd(room);
     } else if (room.status === 'game_over') {
@@ -1578,6 +1578,80 @@ async function endRound() {
 
   updates[`rooms/${roomCode}/status`] = gameOver ? 'game_over' : 'round_end';
   await update(ref(db), updates);
+}
+
+// ── Round End Render ──
+function renderRoundEnd(room) {
+  showScreen('round-end');
+  document.getElementById('round-end-title').textContent = `ROUND ${room.round || 1} OVER`;
+  document.getElementById('round-end-subtitle').textContent = `First to ${WINNING_SCORE} points wins`;
+  document.getElementById('game-over-winner').classList.add('hidden');
+
+  const roundScores = room.roundScores || {};
+  const players = room.players || {};
+
+  const results = Object.entries(players).map(([id, p]) => ({
+    id, name: p.name,
+    totalScore: p.score || 0,
+    roundScore: roundScores[id] || 0,
+    status: room.currentRound?.[id]?.status
+  }));
+  results.sort((a, b) => b.totalScore - a.totalScore);
+
+  document.getElementById('round-results').innerHTML = results.map((r, i) => `
+    <div class="result-row">
+      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
+      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
+      <div>
+        <div class="result-pts">${r.totalScore}</div>
+        <div class="result-delta">+${r.roundScore} this round</div>
+        ${r.status === 'busted' ? '<div class="result-busted">busted</div>' : ''}
+        ${r.status === 'frozen' ? '<div class="result-busted">frozen</div>' : ''}
+        ${r.status === 'flip7' ? '<div style="color:var(--accent);font-size:0.65rem">★ FLIP 7</div>' : ''}
+      </div>
+    </div>
+  `).join('');
+
+  const wrapper = document.getElementById('next-round-wrapper');
+  // Always show the button for host; avoid duplicate listeners by replacing innerHTML
+  if (room.host === myId) {
+    wrapper.innerHTML = `<button class="btn btn-primary" id="next-round-btn">START ROUND ${(room.round || 1) + 1}</button>`;
+    document.getElementById('next-round-btn').onclick = startNextRound;
+  } else {
+    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host to start next round...</div>`;
+  }
+}
+
+// ── Game Over Render ──
+function renderGameOver(room) {
+  showScreen('round-end');
+  document.getElementById('round-end-title').textContent = 'GAME OVER';
+  document.getElementById('round-end-subtitle').textContent = '';
+
+  const players = room.players || {};
+  const results = Object.entries(players).map(([id, p]) => ({ id, name: p.name, totalScore: p.score || 0 }));
+  results.sort((a, b) => b.totalScore - a.totalScore);
+
+  const winner = results[0];
+  const winnerEl = document.getElementById('game-over-winner');
+  winnerEl.textContent = `🏆 ${winner.name} wins!`;
+  winnerEl.classList.remove('hidden');
+
+  document.getElementById('round-results').innerHTML = results.map((r, i) => `
+    <div class="result-row">
+      <div class="result-rank ${i === 0 ? 'winner' : ''}">${i + 1}</div>
+      <div class="result-pname">${escHtml(r.name)}${r.id === myId ? ' <span style="color:var(--accent3);font-size:0.65rem">(you)</span>' : ''}</div>
+      <div class="result-pts">${r.totalScore}</div>
+    </div>
+  `).join('');
+
+  const wrapper = document.getElementById('next-round-wrapper');
+  if (room.host === myId) {
+    wrapper.innerHTML = `<button class="btn btn-primary" id="new-game-btn">NEW GAME</button>`;
+    document.getElementById('new-game-btn').onclick = startNewGame;
+  } else {
+    wrapper.innerHTML = `<div class="turn-indicator">Waiting for host...</div>`;
+  }
 }
 
 // ── Next Round ──
