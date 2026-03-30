@@ -1228,7 +1228,7 @@ async function startGame() {
   const turnOrder = shuffle(playerIds);
   const playerRound = {};
   playerIds.forEach(id => {
-    playerRound[id] = { cards: [], status: 'active', bonusPoints: 0, hasSecondChance: false, frozen: false };
+    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false };
   });
 
   await update(ref(db, `rooms/${roomCode}`), {
@@ -1256,45 +1256,37 @@ function renderGame(room) {
   const currentPlayerId = room.turnOrder[room.currentTurnIndex % room.turnOrder.length];
   const isMyTurn = currentPlayerId === myId;
   const myStatus = room.currentRound?.[myId]?.status || 'active';
-  const isFrozen = room.currentRound?.[myId]?.frozen;
+  const amActive = myStatus === 'active';
 
   // Deck
   const deckCount = room.deck ? room.deck.length : 0;
   document.getElementById('deck-count-label').textContent = `${deckCount} left`;
-  const deckStack = document.getElementById('deck-stack');
-  deckStack.classList.toggle('active', isMyTurn && myStatus === 'active');
+  document.getElementById('deck-stack').classList.toggle('active', isMyTurn && amActive);
 
   // Last card
   renderLastCard(room.lastCard);
 
   // Turn indicator
-  const turningPlayer = room.players[currentPlayerId]?.name || '?';
   const turnEl = document.getElementById('turn-indicator');
-
-  const allDoneCounting = Object.values(room.currentRound || {}).filter(p => p.status === 'active').length;
-  if (allDoneCounting === 0) {
+  const activeCount = Object.values(room.currentRound || {}).filter(p => p.status === 'active').length;
+  if (activeCount === 0) {
     turnEl.textContent = 'All players done — round ending...';
-  } else if (isMyTurn) {
-    if (isFrozen) {
-      turnEl.innerHTML = '❄ YOUR TURN IS FROZEN — SKIP';
-    } else {
-      turnEl.textContent = '⟶ YOUR TURN';
-    }
+  } else if (isMyTurn && amActive) {
+    turnEl.textContent = '⟶ YOUR TURN — flip a card or stop';
+  } else if (myStatus === 'frozen') {
+    turnEl.textContent = '❄ You are frozen — sit tight';
+  } else if (!amActive) {
+    turnEl.textContent = `You are ${myStatus} — watching...`;
   } else {
-    turnEl.textContent = `${turningPlayer}'s turn`;
+    turnEl.textContent = `${room.players[currentPlayerId]?.name || '?'}'s turn`;
   }
 
-  // Action bar
+  // Action bar — only shown when it is your turn and you are active
   const actionBar = document.getElementById('action-bar');
-  if (isMyTurn && myStatus === 'active') {
+  if (isMyTurn && amActive) {
     actionBar.classList.remove('hidden');
-    if (isFrozen) {
-      document.getElementById('btn-flip').textContent = 'SKIP (FROZEN)';
-      document.getElementById('btn-stop').style.display = 'none';
-    } else {
-      document.getElementById('btn-flip').textContent = 'FLIP CARD';
-      document.getElementById('btn-stop').style.display = '';
-    }
+    document.getElementById('btn-flip').textContent = 'FLIP CARD';
+    document.getElementById('btn-stop').style.display = '';
   } else {
     actionBar.classList.add('hidden');
   }
@@ -1353,13 +1345,15 @@ function renderPlayersGrid(room, currentPlayerId) {
     let statusLabel = '';
     let statusCss = '';
     if (id === currentPlayerId && status === 'active') { statusLabel = '● FLIPPING'; statusCss = 'status-flipping'; }
+    else if (status === 'active') { statusLabel = '○ WAITING'; statusCss = 'status-waiting'; }
     else if (status === 'stopped') { statusLabel = '■ STOPPED'; statusCss = 'status-stopped'; }
     else if (status === 'busted') { statusLabel = '✕ BUSTED'; statusCss = 'status-busted'; }
+    else if (status === 'frozen') { statusLabel = '❄ FROZEN'; statusCss = 'status-stopped'; }
     else if (status === 'flip7') { statusLabel = '★ FLIP 7!'; statusCss = 'status-flipping'; }
     else { statusLabel = '○ WAITING'; statusCss = 'status-waiting'; }
 
     const panel = document.createElement('div');
-    panel.className = `player-panel ${id === currentPlayerId && status === 'active' ? 'active-turn' : ''} ${id === myId ? 'you-panel' : ''} ${status === 'busted' ? 'busted' : ''} ${status === 'stopped' ? 'stopped' : ''}`;
+    panel.className = `player-panel ${id === currentPlayerId && status === 'active' ? 'active-turn' : ''} ${id === myId ? 'you-panel' : ''} ${status === 'busted' ? 'busted' : ''} ${status === 'stopped' || status === 'frozen' ? 'stopped' : ''}`;
 
     // Count duplicates for display
     const valCounts = {};
@@ -1378,7 +1372,7 @@ function renderPlayersGrid(room, currentPlayerId) {
       </div>
       <div class="panel-status ${statusCss}">${statusLabel} — ${uCount}/7 unique</div>
       <div class="mini-cards">${miniCards}</div>
-      ${roundData.frozen && status === 'active' ? '<div style="color:var(--flip-blue);font-size:0.65rem;margin-top:4px">❄ FROZEN</div>' : ''}
+
     `;
     grid.appendChild(panel);
   });
@@ -1393,7 +1387,8 @@ function renderLog(log) {
 }
 
 // ── Helpers ──
-// Advance currentTurnIndex to the next player who is still 'active'. Wraps around.
+// Advance currentTurnIndex to the next player who is still 'active'.
+// 'frozen', 'stopped', 'busted', 'flip7' players are all skipped.
 function advanceTurn(room, currentIdx) {
   const order = room.turnOrder;
   const len = order.length;
@@ -1402,19 +1397,18 @@ function advanceTurn(room, currentIdx) {
     const pid = order[nextIdx];
     if (room.currentRound[pid]?.status === 'active') return nextIdx;
   }
-  return currentIdx; // no active players found
+  return currentIdx; // no active players — round should end
 }
 
+// Round is over when every player is stopped / busted / flip7 / frozen
 function allPlayersDone(roundData) {
   return Object.values(roundData).every(p => p.status !== 'active');
 }
 
 // ── FLIP ──
-// Current player draws one card. Their turn CONTINUES until they:
-//   • choose STOP (voluntary)
-//   • BUST (drew a duplicate number without a Second Chance)
-//   • hit FLIP 7 (7 unique number values)
-// Turn only advances on STOP / BUST / FLIP7.
+// Every flip draws one card then ALWAYS passes the turn to the next active player.
+// Frozen players are immediately skipped (their status is already 'frozen', so
+// advanceTurn skips them automatically).
 async function doFlip() {
   if (!gameState) return;
   const { ref, update, get } = dbFns;
@@ -1429,18 +1423,6 @@ async function doFlip() {
   const myRound = room.currentRound[myId];
   if (!myRound || myRound.status !== 'active') return;
 
-  // ── Frozen: entire turn is skipped, advance to next player ──
-  if (myRound.frozen) {
-    const updates = {};
-    updates[`rooms/${roomCode}/currentRound/${myId}/frozen`] = false;
-    const fakeRound = { ...room.currentRound, [myId]: { ...myRound, frozen: false } };
-    updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: fakeRound }, room.currentTurnIndex);
-    const log = room.log || [];
-    updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} was frozen — skipping turn!`].slice(-40);
-    await update(ref(db), updates);
-    return;
-  }
-
   if (!room.deck || room.deck.length === 0) {
     await endRound();
     return;
@@ -1453,37 +1435,31 @@ async function doFlip() {
   updates[`rooms/${roomCode}/lastCard`] = card;
 
   let newCards = [...(myRound.cards || [])];
-  let newStatus = 'active'; // player keeps turn by default
+  let newStatus = 'active';
   let logMsg = `${room.players[myId].name} flipped `;
-  let turnAdvances = false; // only true on bust or flip7
 
   if (card.type === 'number') {
     const heldValues = newCards.filter(c => c.type === 'number').map(c => c.value);
     const isDuplicate = heldValues.includes(card.value);
 
     if (isDuplicate && myRound.hasSecondChance) {
-      // Burn the second-chance card; player survives and keeps their turn
       newCards = newCards.filter(c => c.type !== 'secondchance');
       updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = false;
-      logMsg += `${card.value} — duplicate! Second Chance used, still safe ✓ (still your turn)`;
+      logMsg += `${card.value} — duplicate! Second Chance saved them!`;
     } else if (isDuplicate) {
       newStatus = 'busted';
-      turnAdvances = true;
-      logMsg += `${card.value} — BUST! 💥 Turn passes.`;
+      logMsg += `${card.value} — BUST! 💥`;
     } else {
       newCards.push(card);
       const uCount = uniqueCount(newCards);
       logMsg += `${card.value} (${uCount}/7 unique)`;
       if (uCount === 7) {
         newStatus = 'flip7';
-        turnAdvances = true;
-        logMsg += ' — FLIP 7! ★ +15 bonus! Turn passes.';
-      } else {
-        logMsg += ' — flip again or stop.';
+        logMsg += ' — FLIP 7! ★ +15 bonus!';
       }
     }
   } else if (card.type === 'freeze') {
-    // Tag the next active player (not self) to lose their next turn
+    // Find the next active player after the current one and freeze them
     const order = room.turnOrder;
     const myIdx = order.indexOf(myId);
     let target = null;
@@ -1492,41 +1468,40 @@ async function doFlip() {
       if (room.currentRound[pid]?.status === 'active' && pid !== myId) { target = pid; break; }
     }
     if (target) {
-      updates[`rooms/${roomCode}/currentRound/${target}/frozen`] = true;
-      logMsg += `\u2744 FREEZE — ${room.players[target]?.name} loses their next turn! (still your turn)`;
+      // Set target status to 'frozen' — they are done for this round
+      updates[`rooms/${roomCode}/currentRound/${target}/status`] = 'frozen';
+      logMsg += `❄ FREEZE — ${room.players[target]?.name} is frozen out for this round!`;
     } else {
-      logMsg += `\u2744 FREEZE — no other active player to freeze. (still your turn)`;
+      logMsg += `❄ FREEZE — no other active player to freeze.`;
     }
     newCards.push(card);
   } else if (card.type === 'bonus2') {
     newCards.push(card);
-    logMsg += `+2 BONUS \uD83C\uDF1F (still your turn)`;
+    logMsg += `+2 BONUS 🌟`;
   } else if (card.type === 'secondchance') {
     newCards.push(card);
     updates[`rooms/${roomCode}/currentRound/${myId}/hasSecondChance`] = true;
-    logMsg += `SECOND CHANCE saved for later! (still your turn)`;
+    logMsg += `SECOND CHANCE — saved for a future duplicate!`;
   }
 
   updates[`rooms/${roomCode}/currentRound/${myId}/cards`] = newCards;
   updates[`rooms/${roomCode}/currentRound/${myId}/status`] = newStatus;
 
-  if (turnAdvances) {
-    const simRound = { ...room.currentRound, [myId]: { ...myRound, status: newStatus } };
-    updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
-  }
+  // ALWAYS advance to the next active player after every flip
+  const simRound = { ...room.currentRound, [myId]: { ...myRound, cards: newCards, status: newStatus } };
+  updates[`rooms/${roomCode}/currentTurnIndex`] = advanceTurn({ ...room, currentRound: simRound }, room.currentTurnIndex);
 
   const log = room.log || [];
   updates[`rooms/${roomCode}/log`] = [...log, logMsg].slice(-40);
   await update(ref(db), updates);
 
-  const updatedRound = { ...room.currentRound, [myId]: { ...myRound, cards: newCards, status: newStatus } };
-  if (allPlayersDone(updatedRound)) {
+  if (allPlayersDone(simRound)) {
     setTimeout(() => endRound(), 800);
   }
 }
 
 // ── STOP ──
-// Player banks their cards. Turn advances to next active player.
+// Player banks their cards. Turn passes to the next active player.
 async function doStop() {
   if (!gameState) return;
   const { ref, update, get } = dbFns;
@@ -1549,26 +1524,24 @@ async function doStop() {
 
   const log = room.log || [];
   const score = calcScore(myRound.cards || []);
-  updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} stopped with ${score} pts — turn passes.`].slice(-40);
+  updates[`rooms/${roomCode}/log`] = [...log, `${room.players[myId].name} stopped with ${score} pts.`].slice(-40);
   await update(ref(db), updates);
 
-  const updatedRound = { ...room.currentRound, [myId]: { ...myRound, status: 'stopped' } };
-  if (allPlayersDone(updatedRound)) {
+  if (allPlayersDone(simRound)) {
     setTimeout(() => endRound(), 600);
   }
 }
 
 // ── End Round ──
-// Any player can trigger this; a Firebase transaction ensures only one client writes.
+// Any player can trigger; transaction ensures only one client writes.
 async function endRound() {
   const { ref, update, get, runTransaction } = dbFns;
 
-  // Atomic guard: only the first caller transitions status from 'playing' → 'ending'
   const guardRef = ref(db, `rooms/${roomCode}/status`);
   let shouldProceed = false;
   await runTransaction(guardRef, current => {
     if (current === 'playing') { shouldProceed = true; return 'ending'; }
-    return undefined; // abort transaction if already transitioned
+    return undefined;
   });
   if (!shouldProceed) return;
 
@@ -1581,7 +1554,7 @@ async function endRound() {
 
   const roundScores = {};
   Object.entries(roundData).forEach(([id, rd]) => {
-    if (rd.status === 'busted') {
+    if (rd.status === 'busted' || rd.status === 'frozen') {
       roundScores[id] = 0;
     } else {
       let sc = calcScore(rd.cards || []);
@@ -1592,8 +1565,7 @@ async function endRound() {
 
   const updates = {};
   Object.entries(roundScores).forEach(([id, sc]) => {
-    const prev = players[id]?.score || 0;
-    updates[`rooms/${roomCode}/players/${id}/score`] = prev + sc;
+    updates[`rooms/${roomCode}/players/${id}/score`] = (players[id]?.score || 0) + sc;
   });
   updates[`rooms/${roomCode}/roundScores`] = roundScores;
 
@@ -1618,7 +1590,7 @@ async function startNextRound() {
   const turnOrder = shuffle(playerIds);
   const playerRound = {};
   playerIds.forEach(id => {
-    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false, frozen: false };
+    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false };
   });
 
   await update(ref(db, `rooms/${roomCode}`), {
@@ -1652,7 +1624,7 @@ async function startNewGame() {
   const turnOrder = shuffle(playerIds);
   const playerRound = {};
   playerIds.forEach(id => {
-    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false, frozen: false };
+    playerRound[id] = { cards: [], status: 'active', hasSecondChance: false };
   });
 
   await update(ref(db, `rooms/${roomCode}`), {
